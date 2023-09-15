@@ -26,6 +26,7 @@ func NewAPIServer(listenAddr string, store Storage) *APIserver {
 func (s *APIserver) Run() {
 	router := mux.NewRouter()
 
+	router.HandleFunc("/login", makeHTTPHandleFunc(s.handleLogin))
 	router.HandleFunc("/account", makeHTTPHandleFunc(s.handleAccount))
 	router.HandleFunc("/account/{id}", withJWTAuth(makeHTTPHandleFunc(s.handleGetAccountByID), s.store))
 	router.HandleFunc("/transfer", makeHTTPHandleFunc(s.handleTransfer))
@@ -33,6 +34,38 @@ func (s *APIserver) Run() {
 	log.Println("JSON API server on port: ", s.listenAddr)
 
 	http.ListenAndServe(s.listenAddr, router)
+}
+
+func (s *APIserver) handleLogin(w http.ResponseWriter, r *http.Request) error {
+	if r.Method != "POST" {
+		return fmt.Errorf("method not allowed %s", r.Method)
+	}
+	var req LoginRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		return err
+	}
+
+	acc, err := s.store.GetAccountByNumber(int(req.Number))
+	if err != nil {
+		return err
+	}
+
+	if !acc.ValidatePassword(req.Password) {
+		return fmt.Errorf("not authenticated")
+	}
+
+	token, err := createJWT(acc)
+	if err != nil {
+		return err
+	}
+
+	resp := LoginResponse{
+		Token:  token,
+		Number: acc.Number,
+	}
+
+	return WriteJson(w, http.StatusOK, resp)
 }
 
 func (s *APIserver) handleAccount(w http.ResponseWriter, r *http.Request) error {
@@ -88,17 +121,14 @@ func (s *APIserver) handleCreateAccount(w http.ResponseWriter, r *http.Request) 
 	// if err := json.NewDecoder(r.Body).Decode(&createAccountReq); err != nil {
 	// 	return err
 	// }
-	account := NewAccount(createAccountReq.FirstName, createAccountReq.LastName)
-	if err := s.store.CreateAccount(account); err != nil {
-		return err
-	}
-
-	tokenString, err := createJWT(account)
+	account, err := NewAccount(createAccountReq.FirstName, createAccountReq.LastName, createAccountReq.Password)
 	if err != nil {
 		return err
 	}
 
-	fmt.Println("jwt token: ", tokenString)
+	if err := s.store.CreateAccount(account); err != nil {
+		return err
+	}
 
 	return WriteJson(w, http.StatusOK, account)
 }
